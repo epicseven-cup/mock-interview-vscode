@@ -4,10 +4,16 @@
   "description": "AI-powered mock coding interviews with Claude, Ollama, or GitHub Copilot. Auto-detects problems, preserves your working session, and gives feedback from a harsh, hint-giving, or Socratic interviewer.",
   "publisher": "tomato",
   "version": "0.0.1",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/epicseven-cup/mock-interview-vscode"
+  },
+  "keywords": ["interview", "ai", "coding", "practice", "leetcode", "claude", "ollama", "copilot"],
   "engines": {
     "vscode": "^1.90.0"
   },
-  "categories": ["Other"],
+  "categories": ["AI", "Education", "Other"],
   "activationEvents": ["onStartupFinished"],
   "main": "./out/extension.js",
   "contributes": {

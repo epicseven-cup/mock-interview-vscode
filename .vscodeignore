@@ -2,6 +2,10 @@
 .vscode-test/**
 src/**
 .gitignore
+.git/**
 tsconfig.json
 **/*.map
+**/*.ts
 node_modules/**
+*.vsix
+package-lock.json
