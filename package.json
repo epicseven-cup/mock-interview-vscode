@@ -1,0 +1,192 @@
+{
+  "name": "mock-interview-vscode",
+  "displayName": "Mock Interview",
+  "description": "AI-powered mock coding interviews with Claude, Ollama, or GitHub Copilot. Auto-detects problems, preserves your working session, and gives feedback from a harsh, hint-giving, or Socratic interviewer.",
+  "publisher": "tomato",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "mockInterview.requestReview",
+        "title": "Ready for Review",
+        "category": "Mock Interview",
+        "icon": "$(eye)"
+      },
+      {
+        "command": "mockInterview.openAiPanel",
+        "title": "Open AI Panel",
+        "category": "Mock Interview",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "mockInterview.selectMode",
+        "title": "Select Interviewer Mode",
+        "category": "Mock Interview",
+        "icon": "$(person)"
+      },
+      {
+        "command": "mockInterview.setupClaude",
+        "title": "Setup Claude",
+        "category": "Mock Interview",
+        "icon": "$(key)"
+      },
+      {
+        "command": "mockInterview.selectClaudeModel",
+        "title": "Select Claude Model",
+        "category": "Mock Interview",
+        "icon": "$(list-selection)"
+      },
+      {
+        "command": "mockInterview.selectOllamaModel",
+        "title": "Select Ollama Model",
+        "category": "Mock Interview",
+        "icon": "$(server)"
+      },
+      {
+        "command": "mockInterview.addToContext",
+        "title": "Add Files to Context",
+        "category": "Mock Interview",
+        "icon": "$(add)"
+      },
+      {
+        "command": "mockInterview.clearSession",
+        "title": "Clear Session",
+        "category": "Mock Interview",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "mockInterview.clearContext",
+        "title": "Clear Context Files",
+        "category": "Mock Interview",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "mockInterview.removeFromContext",
+        "title": "Remove from Context",
+        "category": "Mock Interview",
+        "icon": "$(remove)"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "mockInterview",
+          "title": "Mock Interview",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "mockInterview": [
+        {
+          "id": "mockInterviewContext",
+          "name": "Interview Context"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Mock Interview",
+      "properties": {
+        "mockInterview.aiProvider": {
+          "type": "string",
+          "enum": ["vscode-lm", "claude", "ollama"],
+          "enumDescriptions": [
+            "GitHub Copilot (built-in, no API key needed)",
+            "Anthropic Claude (requires API key)",
+            "Ollama (local, no API key needed)"
+          ],
+          "default": "vscode-lm",
+          "description": "AI provider for interview feedback"
+        },
+        "mockInterview.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "API key for Claude or OpenAI (not needed for vscode-lm or ollama)"
+        },
+        "mockInterview.ollamaUrl": {
+          "type": "string",
+          "default": "http://localhost:11434",
+          "description": "Ollama server URL"
+        },
+        "mockInterview.claudeModel": {
+          "type": "string",
+          "default": "claude-sonnet-4-5",
+          "description": "Claude model ID (e.g. claude-sonnet-4-5, claude-opus-4-5, claude-haiku-4-5)"
+        },
+        "mockInterview.ollamaModel": {
+          "type": "string",
+          "default": "llama3",
+          "description": "Ollama model name (e.g. llama3, mistral, codellama)"
+        }
+      }
+    },
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "mockInterview.removeFromContext",
+          "when": "false"
+        },
+        {
+          "command": "mockInterview.clearContext",
+          "when": "false"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "mockInterview.requestReview",
+          "when": "view == mockInterviewContext",
+          "group": "navigation@1"
+        },
+        {
+          "command": "mockInterview.addToContext",
+          "when": "view == mockInterviewContext",
+          "group": "navigation@2"
+        },
+        {
+          "command": "mockInterview.openAiPanel",
+          "when": "view == mockInterviewContext",
+          "group": "navigation@3"
+        },
+        {
+          "command": "mockInterview.clearSession",
+          "when": "view == mockInterviewContext",
+          "group": "navigation@4"
+        },
+        {
+          "command": "mockInterview.selectOllamaModel",
+          "when": "view == mockInterviewContext",
+          "group": "navigation@5"
+        },
+        {
+          "command": "mockInterview.selectMode",
+          "when": "view == mockInterviewContext",
+          "group": "navigation@6"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "mockInterview.removeFromContext",
+          "when": "view == mockInterviewContext && viewItem == contextItem",
+          "group": "inline"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.90.0",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.4.0"
+  }
+}
