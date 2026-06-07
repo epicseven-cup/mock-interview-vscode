@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as fs from 'fs';
 import * as path from 'path';
 
 export class ContextItem extends vscode.TreeItem {
@@ -7,7 +8,7 @@ export class ContextItem extends vscode.TreeItem {
     isProblem = false
   ) {
     let isDir = false;
-    try { isDir = require('fs').statSync(fsPath).isDirectory(); } catch {}
+    try { isDir = fs.statSync(fsPath).isDirectory(); } catch {}
     super(path.basename(fsPath), vscode.TreeItemCollapsibleState.None);
     this.tooltip = fsPath;
     this.description = isProblem ? 'problem' : path.dirname(fsPath);
@@ -32,11 +33,6 @@ export class ContextProvider implements vscode.TreeDataProvider<ContextItem> {
 
   setProblem(fsPath: string): void {
     this.problemFiles = [fsPath];
-    this._onDidChangeTreeData.fire();
-  }
-
-  clearProblem(): void {
-    this.problemFiles = [];
     this._onDidChangeTreeData.fire();
   }
 
@@ -72,10 +68,6 @@ export class ContextProvider implements vscode.TreeDataProvider<ContextItem> {
 
   getSolutionFiles(): string[] {
     return [...this.solutionFiles];
-  }
-
-  getAll(): string[] {
-    return [...this.problemFiles, ...this.solutionFiles];
   }
 
   getTreeItem(element: ContextItem): vscode.TreeItem {

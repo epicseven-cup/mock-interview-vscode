@@ -1,86 +1,18 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
-import * as http from 'http';
-import * as https from 'https';
 import { ContextProvider, ContextItem } from './contextProvider';
 import { AiPanel } from './aiPanel';
-import { callAi, ChatMessage, InterviewerMode } from './aiService';
+import { callAi, ChatMessage, InterviewerMode, fetchClaudeModels, fetchOllamaModels } from './aiService';
+import { gatherContextFiles, getDiagnosticsText, buildContextMessage } from './contextBuilder';
 import { scanAllProblems, scanWorkingInterviews, watchForProblems, Problem, WorkingInterview } from './problemScanner';
-
-function gatherContextFiles(paths: string[]): { path: string; content: string }[] {
-  const result: { path: string; content: string }[] = [];
-  for (const p of paths) {
-    try {
-      const stat = fs.statSync(p);
-      if (stat.isFile()) {
-        result.push({ path: p, content: fs.readFileSync(p, 'utf8') });
-      } else if (stat.isDirectory()) {
-        const files = fs.readdirSync(p).slice(0, 20);
-        for (const f of files) {
-          const fp = path.join(p, f);
-          try {
-            if (fs.statSync(fp).isFile()) {
-              result.push({ path: fp, content: fs.readFileSync(fp, 'utf8') });
-            }
-          } catch {}
-        }
-      }
-    } catch {}
-  }
-  return result;
-}
-
-function getDiagnosticsText(): string {
-  const lines: string[] = [];
-  for (const [uri, diags] of vscode.languages.getDiagnostics()) {
-    const relevant = diags.filter(
-      (d) =>
-        d.severity === vscode.DiagnosticSeverity.Error ||
-        d.severity === vscode.DiagnosticSeverity.Warning
-    );
-    if (relevant.length) {
-      lines.push(`${uri.fsPath}:`);
-      relevant.forEach((d) => {
-        const level = d.severity === vscode.DiagnosticSeverity.Error ? 'Error' : 'Warning';
-        lines.push(`  [${level}] Line ${d.range.start.line + 1}: ${d.message}`);
-      });
-    }
-  }
-  return lines.join('\n');
-}
-
-function buildContextMessage(
-  problemFiles: { path: string; content: string }[],
-  solutionFiles: { path: string; content: string }[],
-  diagnostics: string,
-  trigger: 'review' | 'build' | 'start'
-): string {
-  const problemSection = problemFiles.length
-    ? `## Problem Statement\n\n${problemFiles.map((f) => f.content).join('\n\n')}\n\n`
-    : '';
-
-  const solutionSection = solutionFiles.length
-    ? `## Candidate's Solution\n\n${solutionFiles.map((f) => `### ${f.path}\n\`\`\`\n${f.content}\n\`\`\``).join('\n\n')}`
-    : '(No solution files added yet)';
-
-  const diagSection = diagnostics ? `\n\n## Build Output / Diagnostics\n${diagnostics}` : '';
-
-  const triggerNote =
-    trigger === 'start'
-      ? `The interview is beginning. Look at the problem statement and the candidate's current code. React to what you actually see — comment on their starting point, what's there, what's obviously missing, and ask them something specific about their approach. Don't give a structured breakdown. Just respond like you're sitting across from them for the first time.`
-      : trigger === 'build'
-      ? `The candidate just ran a build and there are diagnostics. React to the errors like a real interviewer watching them compile — call out what's broken, ask them if they see why, and let them work through it.`
-      : `The candidate just said they're ready for feedback. Look at their current code against the problem requirements and respond like a real interviewer who's been watching them work. React to what you see — what they got right, what's still off, and push them on something specific.`;
-
-  return `${triggerNote}\n\n${problemSection}${solutionSection}${diagSection}`;
-}
 
 async function runAi(
   panel: AiPanel,
   history: ChatMessage[],
   label: string,
   mode: InterviewerMode,
+  apiKey: string,
   log?: vscode.OutputChannel
 ): Promise<void> {
   panel.showThinking(label);
@@ -88,7 +20,7 @@ async function runAi(
   let response = '';
   try {
     log?.appendLine(`runAi: calling AI with ${history.length} messages, mode=${mode}`);
-    await callAi(history, (chunk) => { response += chunk; }, token, mode);
+    await callAi(history, (chunk) => { response += chunk; }, token, mode, apiKey);
     log?.appendLine(`runAi: done, response length=${response.length}`);
     panel.showMessage(label, response);
     history.push({ role: 'assistant', content: response });
@@ -99,68 +31,26 @@ async function runAi(
   }
 }
 
-async function fetchClaudeModels(apiKey: string): Promise<string[]> {
-  return new Promise((resolve) => {
-    const req = https.request({
-      hostname: 'api.anthropic.com',
-      path: '/v1/models',
-      method: 'GET',
-      headers: {
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-    }, (res) => {
-      let data = '';
-      res.on('data', (c: Buffer) => (data += c.toString()));
-      res.on('end', () => {
-        try {
-          const json = JSON.parse(data);
-          const ids: string[] = (json.data as { id: string }[])
-            .map((m) => m.id)
-            .filter((id) => id.startsWith('claude-'));
-          resolve(ids.length ? ids : FALLBACK_CLAUDE_MODELS);
-        } catch {
-          resolve(FALLBACK_CLAUDE_MODELS);
-        }
-      });
-    });
-    req.setTimeout(8000, () => { req.destroy(); resolve(FALLBACK_CLAUDE_MODELS); });
-    req.on('error', () => resolve(FALLBACK_CLAUDE_MODELS));
-    req.end();
-  });
-}
-
-const FALLBACK_CLAUDE_MODELS = [
-  'claude-opus-4-5',
-  'claude-sonnet-4-5',
-  'claude-haiku-4-5',
-];
-
-async function fetchOllamaModels(baseUrl: string): Promise<string[]> {
-  const url = new globalThis.URL('/api/tags', baseUrl);
-  const transport = url.protocol === 'https:' ? https : http;
-  return new Promise((resolve) => {
-    transport
-      .get(url.toString(), (res) => {
-        let data = '';
-        res.on('data', (chunk: Buffer) => (data += chunk.toString()));
-        res.on('end', () => {
-          try {
-            const json = JSON.parse(data);
-            resolve((json.models as { name: string }[]).map((m) => m.name));
-          } catch {
-            resolve([]);
-          }
-        });
-      })
-      .on('error', () => resolve([]));
-  });
-}
-
-export function activate(context: vscode.ExtensionContext) {
+export async function activate(context: vscode.ExtensionContext) {
   const log = vscode.window.createOutputChannel('Mock Interview');
   context.subscriptions.push(log);
   log.appendLine('Extension activated');
+
+  // One-time migration: move API key from plaintext settings to SecretStorage.
+  // We can't clear the old setting (it's no longer registered), but we only
+  // migrate when secrets is empty so this only runs once.
+  {
+    const existing = await context.secrets.get('mockInterview.apiKey');
+    if (!existing) {
+      const legacyKey = vscode.workspace.getConfiguration('mockInterview').get<string>('apiKey', '');
+      if (legacyKey) {
+        await context.secrets.store('mockInterview.apiKey', legacyKey);
+        log.appendLine('Migrated API key from settings to SecretStorage');
+      }
+    }
+  }
+
+  let cachedApiKey = (await context.secrets.get('mockInterview.apiKey')) ?? '';
 
   const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
   statusBar.text = '$(eye) Ready for Review';
@@ -170,7 +60,6 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(statusBar);
 
   const provider = new ContextProvider();
-
   const treeView = vscode.window.createTreeView('mockInterviewContext', {
     treeDataProvider: provider,
     showCollapseAll: false,
@@ -179,70 +68,78 @@ export function activate(context: vscode.ExtensionContext) {
 
   const history: ChatMessage[] = [];
   let mode: InterviewerMode = 'hint';
+  const snapshots = new Map<string, string>();
+  let problemSent = false;
 
   function currentModelLabel(): string {
     const config = vscode.workspace.getConfiguration('mockInterview');
-    const provider = config.get<string>('aiProvider', 'vscode-lm');
-    if (provider === 'claude') return `claude: ${config.get<string>('claudeModel', 'sonnet-4-5').replace('claude-', '')}`;
-    if (provider === 'ollama') return `ollama: ${config.get<string>('ollamaModel', 'llama3')}`;
+    const p = config.get<string>('aiProvider', 'vscode-lm');
+    if (p === 'claude') return `claude: ${config.get<string>('claudeModel', 'sonnet-4-5').replace('claude-', '')}`;
+    if (p === 'ollama') return `ollama: ${config.get<string>('ollamaModel', 'llama3')}`;
     return 'copilot';
   }
 
-  function syncModelLabel() {
-    AiPanel.currentPanel?.setModelLabel(currentModelLabel());
+  function resetSession() {
+    history.length = 0;
+    snapshots.clear();
+    problemSent = false;
+  }
+
+  function setupPanelHandlers(panel: AiPanel) {
+    panel.onUserMessage((text) => {
+      log.appendLine(`User message: ${text}`);
+      panel.showMessage('You', text, 'user');
+      history.push({ role: 'user', content: text });
+      runAi(panel, history, 'Interviewer', mode, cachedApiKey, log);
+    });
+    panel.onReviewRequest(() => {
+      log.appendLine('Review requested from panel');
+      triggerAi('review');
+    });
+    panel.onModeChange((newMode) => {
+      mode = newMode as InterviewerMode;
+      resetSession();
+      log.appendLine(`Mode changed to: ${mode}`);
+    });
+    panel.onSelectModel(() => {
+      const p = vscode.workspace.getConfiguration('mockInterview').get<string>('aiProvider', 'vscode-lm');
+      const cmd = p === 'claude' ? 'mockInterview.selectClaudeModel'
+                : p === 'ollama' ? 'mockInterview.selectOllamaModel'
+                : 'mockInterview.selectMode';
+      vscode.commands.executeCommand(cmd).then(() => {
+        panel.setModelLabel(currentModelLabel());
+      });
+    });
+    panel.setMode(mode);
+    panel.setModelLabel(currentModelLabel());
   }
 
   const triggerAi = (trigger: 'review' | 'build' | 'start') => {
     const problemFiles = gatherContextFiles(provider.getProblemFiles());
     const solutionFiles = gatherContextFiles(provider.getSolutionFiles());
     log.appendLine(`triggerAi(${trigger}) — problem: ${problemFiles.length}, solution: ${solutionFiles.length}`);
+
     if (!problemFiles.length && !solutionFiles.length) {
-      log.appendLine('No context files — skipping AI call');
       vscode.window.showWarningMessage('No files in context. Start or resume an interview first.');
       return;
     }
+
     const diagnostics = trigger === 'build' ? getDiagnosticsText() : '';
-    const userMsg = buildContextMessage(problemFiles, solutionFiles, diagnostics, trigger);
+    const userMsg = buildContextMessage(problemFiles, solutionFiles, diagnostics, trigger, snapshots, problemSent);
     history.push({ role: 'user', content: userMsg });
 
-    const config = vscode.workspace.getConfiguration('mockInterview');
-    log.appendLine(`AI provider: ${config.get('aiProvider')} | model: ${config.get('ollamaModel')} | key set: ${!!config.get('apiKey')}`);
+    problemSent = true;
+    for (const f of solutionFiles) snapshots.set(f.path, f.content);
+
+    const cfg = vscode.workspace.getConfiguration('mockInterview');
+    log.appendLine(`AI provider: ${cfg.get('aiProvider')} | model: ${cfg.get('ollamaModel')} | key set: ${!!cachedApiKey}`);
 
     const label = trigger === 'start' ? 'Interview started' : trigger === 'build' ? 'Build completed' : 'Review';
     const panel = AiPanel.createOrShow(context.extensionUri);
-
-    panel.onUserMessage((text) => {
-      log.appendLine(`User message: ${text}`);
-      panel.showMessage('You', text, 'user');
-      history.push({ role: 'user', content: text });
-      runAi(panel, history, 'Interviewer', mode, log);
-    });
-
-    panel.onReviewRequest(() => {
-      log.appendLine('Review requested from panel');
-      triggerAi('review');
-    });
-
-    panel.onModeChange((newMode) => {
-      mode = newMode as InterviewerMode;
-      history.length = 0;
-      log.appendLine(`Mode changed to: ${mode}`);
-    });
-
-    panel.onSelectModel(() => {
-      const provider = vscode.workspace.getConfiguration('mockInterview').get<string>('aiProvider', 'vscode-lm');
-      const cmd = provider === 'claude' ? 'mockInterview.selectClaudeModel'
-                : provider === 'ollama' ? 'mockInterview.selectOllamaModel'
-                : 'mockInterview.selectMode';
-      vscode.commands.executeCommand(cmd).then(() => syncModelLabel());
-    });
-
-    panel.setMode(mode);
-    panel.setModelLabel(currentModelLabel());
-    runAi(panel, history, label, mode, log);
+    setupPanelHandlers(panel);
+    runAi(panel, history, label, mode, cachedApiKey, log);
   };
 
-  // Trigger AI after build task finishes
   context.subscriptions.push(
     vscode.tasks.onDidEndTaskProcess((e) => {
       if (e.execution.task.group === vscode.TaskGroup.Build) {
@@ -252,42 +149,22 @@ export function activate(context: vscode.ExtensionContext) {
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand('mockInterview.requestReview', () => {
-      triggerAi('review');
-    })
+    vscode.commands.registerCommand('mockInterview.requestReview', () => triggerAi('review'))
   );
 
   context.subscriptions.push(
     vscode.commands.registerCommand('mockInterview.openAiPanel', () => {
       const panel = AiPanel.createOrShow(context.extensionUri);
-      panel.onUserMessage((text) => {
-        panel.showMessage('You', text, 'user');
-        history.push({ role: 'user', content: text });
-        runAi(panel, history, 'Interviewer', mode, log);
-      });
-      panel.onReviewRequest(() => triggerAi('review'));
-      panel.onModeChange((newMode) => {
-        mode = newMode as InterviewerMode;
-        history.length = 0;
-      });
-      panel.onSelectModel(() => {
-        const provider = vscode.workspace.getConfiguration('mockInterview').get<string>('aiProvider', 'vscode-lm');
-        const cmd = provider === 'claude' ? 'mockInterview.selectClaudeModel'
-                  : provider === 'ollama' ? 'mockInterview.selectOllamaModel'
-                  : 'mockInterview.selectMode';
-        vscode.commands.executeCommand(cmd).then(() => syncModelLabel());
-      });
-      panel.setMode(mode);
-      panel.setModelLabel(currentModelLabel());
+      setupPanelHandlers(panel);
     })
   );
 
   context.subscriptions.push(
     vscode.commands.registerCommand('mockInterview.selectMode', async () => {
-      const options: { label: string; description: string; value: InterviewerMode }[] = [
-        { label: '$(flame) Harsh', description: 'Strict, no hints, brutally honest', value: 'harsh' },
-        { label: '$(lightbulb) Hint', description: 'Supportive, gives hints, encouraging', value: 'hint' },
-        { label: '$(comment-discussion) Follow-up', description: 'Socratic, probes with relentless questions', value: 'followup' },
+      const options = [
+        { label: '$(flame) Harsh', description: 'Strict, no hints, brutally honest', value: 'harsh' as InterviewerMode },
+        { label: '$(lightbulb) Hint', description: 'Supportive, gives hints, encouraging', value: 'hint' as InterviewerMode },
+        { label: '$(comment-discussion) Follow-up', description: 'Socratic, probes with relentless questions', value: 'followup' as InterviewerMode },
       ];
       const picked = await vscode.window.showQuickPick(
         options.map((o) => ({ ...o, picked: o.value === mode })),
@@ -295,7 +172,7 @@ export function activate(context: vscode.ExtensionContext) {
       );
       if (picked) {
         mode = picked.value;
-        history.length = 0;
+        resetSession();
         AiPanel.currentPanel?.setMode(mode);
         vscode.window.showInformationMessage(`Interviewer mode: ${picked.label}. Conversation reset.`);
       }
@@ -338,7 +215,7 @@ export function activate(context: vscode.ExtensionContext) {
       );
       if (!choice) return;
 
-      history.length = 0;
+      resetSession();
       provider.clearAll();
 
       if (choice === 'Delete Working Files Too' && workingDir) {
@@ -356,56 +233,46 @@ export function activate(context: vscode.ExtensionContext) {
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand('mockInterview.clearContext', () => {
-      provider.clear();
-    })
+    vscode.commands.registerCommand('mockInterview.clearContext', () => provider.clear())
   );
 
   context.subscriptions.push(
     vscode.commands.registerCommand('mockInterview.setupClaude', async () => {
-      const config = vscode.workspace.getConfiguration('mockInterview');
-      const current = config.get<string>('apiKey', '');
       const key = await vscode.window.showInputBox({
         title: 'Setup Claude',
-        prompt: 'Enter your Anthropic API key',
-        value: current,
+        prompt: cachedApiKey ? 'API key is already set. Paste a new key to replace it.' : 'Enter your Anthropic API key',
         password: true,
         placeHolder: 'sk-ant-...',
         validateInput: (v) => v.trim().length < 10 ? 'Key looks too short' : undefined,
       });
       if (key === undefined) return;
-      await config.update('apiKey', key.trim(), vscode.ConfigurationTarget.Global);
-      await config.update('aiProvider', 'claude', vscode.ConfigurationTarget.Global);
-
-      // Immediately offer model selection
+      cachedApiKey = key.trim();
+      await context.secrets.store('mockInterview.apiKey', cachedApiKey);
+      await vscode.workspace.getConfiguration('mockInterview').update('aiProvider', 'claude', vscode.ConfigurationTarget.Global);
       vscode.commands.executeCommand('mockInterview.selectClaudeModel');
     })
   );
 
   context.subscriptions.push(
     vscode.commands.registerCommand('mockInterview.selectClaudeModel', async () => {
-      const config = vscode.workspace.getConfiguration('mockInterview');
-      const apiKey = config.get<string>('apiKey', '');
-      if (!apiKey) {
+      if (!cachedApiKey) {
         vscode.window.showErrorMessage('Set your API key first — run Mock Interview: Setup Claude.');
         return;
       }
-
       const models = await vscode.window.withProgress(
         { location: vscode.ProgressLocation.Notification, title: 'Fetching Claude models...' },
-        () => fetchClaudeModels(apiKey)
+        () => fetchClaudeModels(cachedApiKey)
       );
-
-      const current = config.get<string>('claudeModel', 'claude-sonnet-4-5');
+      const cfg = vscode.workspace.getConfiguration('mockInterview');
+      const current = cfg.get<string>('claudeModel', 'claude-sonnet-4-5');
       const picked = await vscode.window.showQuickPick(
         models.map((m) => ({ label: m, description: m === current ? '(current)' : '' })),
         { placeHolder: 'Select Claude model' }
       );
       if (!picked) return;
-
-      await config.update('claudeModel', picked.label, vscode.ConfigurationTarget.Global);
+      await cfg.update('claudeModel', picked.label, vscode.ConfigurationTarget.Global);
       vscode.window.showInformationMessage(`Claude model set to: ${picked.label}`);
-      syncModelLabel();
+      AiPanel.currentPanel?.setModelLabel(currentModelLabel());
     })
   );
 
@@ -413,28 +280,24 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('mockInterview.selectOllamaModel', async () => {
       const config = vscode.workspace.getConfiguration('mockInterview');
       const ollamaUrl = config.get<string>('ollamaUrl', 'http://localhost:11434');
-
       const models = await vscode.window.withProgress(
         { location: vscode.ProgressLocation.Notification, title: 'Fetching Ollama models...' },
         () => fetchOllamaModels(ollamaUrl)
       );
-
       if (!models.length) {
         vscode.window.showErrorMessage(`No Ollama models found at ${ollamaUrl}. Is Ollama running?`);
         return;
       }
-
       const current = config.get<string>('ollamaModel', '');
       const picked = await vscode.window.showQuickPick(
         models.map((m) => ({ label: m, description: m === current ? '(current)' : '' })),
         { placeHolder: 'Select Ollama model' }
       );
-
       if (picked) {
         await config.update('ollamaModel', picked.label, vscode.ConfigurationTarget.Global);
         await config.update('aiProvider', 'ollama', vscode.ConfigurationTarget.Global);
         vscode.window.showInformationMessage(`Ollama model set to: ${picked.label}`);
-        syncModelLabel();
+        AiPanel.currentPanel?.setModelLabel(currentModelLabel());
       }
     })
   );
@@ -501,14 +364,13 @@ export function activate(context: vscode.ExtensionContext) {
     const activeProblem = { ...problem, dir: solutionDir, problemFile: resolvedProblemFile, solutionFiles: copiedSolutionFiles };
 
     vscode.window.showInformationMessage(`Interview started — edit files in ${path.basename(solutionDir)}/`);
-
     provider.setProblem(activeProblem.problemFile);
     provider.clear();
     if (activeProblem.solutionFiles.length) {
       provider.add(activeProblem.solutionFiles);
       vscode.window.showTextDocument(vscode.Uri.file(activeProblem.solutionFiles[0]));
     }
-    history.length = 0;
+    resetSession();
     triggerAi('start');
   };
 
@@ -521,7 +383,6 @@ export function activate(context: vscode.ExtensionContext) {
     if (choice === 'Start Interview') startInterview(problem);
   };
 
-  // On activation: resume existing sessions first, then check for new problem templates
   const workingSessions = scanWorkingInterviews();
   if (workingSessions.length === 1) {
     resumeInterview(workingSessions[0]);

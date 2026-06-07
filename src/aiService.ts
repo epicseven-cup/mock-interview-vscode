@@ -2,6 +2,64 @@ import * as vscode from 'vscode';
 import * as https from 'https';
 import * as http from 'http';
 
+const FALLBACK_CLAUDE_MODELS = [
+  'claude-opus-4-5',
+  'claude-sonnet-4-5',
+  'claude-haiku-4-5',
+];
+
+export async function fetchClaudeModels(apiKey: string): Promise<string[]> {
+  return new Promise((resolve) => {
+    const req = https.request({
+      hostname: 'api.anthropic.com',
+      path: '/v1/models',
+      method: 'GET',
+      headers: {
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+    }, (res) => {
+      let data = '';
+      res.on('data', (c: Buffer) => (data += c.toString()));
+      res.on('end', () => {
+        try {
+          const json = JSON.parse(data);
+          const ids: string[] = (json.data as { id: string }[])
+            .map((m) => m.id)
+            .filter((id) => id.startsWith('claude-'));
+          resolve(ids.length ? ids : FALLBACK_CLAUDE_MODELS);
+        } catch {
+          resolve(FALLBACK_CLAUDE_MODELS);
+        }
+      });
+    });
+    req.setTimeout(8000, () => { req.destroy(); resolve(FALLBACK_CLAUDE_MODELS); });
+    req.on('error', () => resolve(FALLBACK_CLAUDE_MODELS));
+    req.end();
+  });
+}
+
+export async function fetchOllamaModels(baseUrl: string): Promise<string[]> {
+  const url = new globalThis.URL('/api/tags', baseUrl);
+  const transport = url.protocol === 'https:' ? https : http;
+  return new Promise((resolve) => {
+    transport
+      .get(url.toString(), (res) => {
+        let data = '';
+        res.on('data', (chunk: Buffer) => (data += chunk.toString()));
+        res.on('end', () => {
+          try {
+            const json = JSON.parse(data);
+            resolve((json.models as { name: string }[]).map((m) => m.name));
+          } catch {
+            resolve([]);
+          }
+        });
+      })
+      .on('error', () => resolve([]));
+  });
+}
+
 export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
@@ -60,7 +118,8 @@ export async function callAi(
   messages: ChatMessage[],
   onChunk: (text: string) => void,
   token: vscode.CancellationToken,
-  mode: InterviewerMode = 'hint'
+  mode: InterviewerMode = 'hint',
+  apiKey = ''
 ): Promise<void> {
   const fullMessages = [...SYSTEM_SEEDS[mode], ...messages];
   const config = vscode.workspace.getConfiguration('mockInterview');
@@ -69,7 +128,7 @@ export async function callAi(
   if (provider === 'vscode-lm') {
     await callVsCodeLm(fullMessages, onChunk, token);
   } else if (provider === 'claude') {
-    await callClaude(fullMessages, config.get<string>('apiKey', ''), config.get<string>('claudeModel', 'claude-sonnet-4-5'), onChunk, token);
+    await callClaude(fullMessages, apiKey, config.get<string>('claudeModel', 'claude-sonnet-4-5'), onChunk, token);
   } else if (provider === 'ollama') {
     await callOllama(
       fullMessages,
@@ -111,7 +170,7 @@ async function callClaude(
   onChunk: (text: string) => void,
   token: vscode.CancellationToken
 ): Promise<void> {
-  if (!apiKey) { onChunk('> Set `mockInterview.apiKey` in settings to use Claude.'); return; }
+  if (!apiKey) { onChunk('> Run **Mock Interview: Setup Claude** to add your API key.'); return; }
   const body = JSON.stringify({
     model,
     max_tokens: 4096,
@@ -137,7 +196,6 @@ async function callClaude(
     }
   }, token);
 }
-
 
 async function callOllama(
   messages: ChatMessage[],

@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as nodeCrypto from 'crypto';
 
 export type UserMessageHandler = (text: string) => void;
 export type ModeChangeHandler = (mode: string) => void;
@@ -6,11 +7,12 @@ export type ModeChangeHandler = (mode: string) => void;
 export class AiPanel {
   static currentPanel: AiPanel | undefined;
   private readonly panel: vscode.WebviewPanel;
+  private readonly nonce: string;
   private cancelSource: vscode.CancellationTokenSource | undefined;
-  private userMessageHandlers: UserMessageHandler[] = [];
-  private reviewHandlers: (() => void)[] = [];
-  private modeChangeHandlers: ModeChangeHandler[] = [];
-  private selectModelHandlers: (() => void)[] = [];
+  private userMessageHandler: UserMessageHandler | undefined;
+  private reviewHandler: (() => void) | undefined;
+  private modeChangeHandler: ModeChangeHandler | undefined;
+  private selectModelHandler: (() => void) | undefined;
 
   static createOrShow(extensionUri: vscode.Uri): AiPanel {
     if (AiPanel.currentPanel) {
@@ -29,17 +31,13 @@ export class AiPanel {
 
   private constructor(panel: vscode.WebviewPanel) {
     this.panel = panel;
+    this.nonce = nodeCrypto.randomBytes(16).toString('hex');
     this.panel.webview.html = this.getHtml();
     this.panel.webview.onDidReceiveMessage((msg) => {
-      if (msg.type === 'userMessage') {
-        this.userMessageHandlers.forEach((h) => h(msg.text));
-      } else if (msg.type === 'requestReview') {
-        this.reviewHandlers.forEach((h) => h());
-      } else if (msg.type === 'modeChange') {
-        this.modeChangeHandlers.forEach((h) => h(msg.mode));
-      } else if (msg.type === 'selectModel') {
-        this.selectModelHandlers.forEach((h) => h());
-      }
+      if (msg.type === 'userMessage') this.userMessageHandler?.(msg.text);
+      else if (msg.type === 'requestReview') this.reviewHandler?.();
+      else if (msg.type === 'modeChange') this.modeChangeHandler?.(msg.mode);
+      else if (msg.type === 'selectModel') this.selectModelHandler?.();
     });
     this.panel.onDidDispose(() => {
       AiPanel.currentPanel = undefined;
@@ -47,15 +45,15 @@ export class AiPanel {
   }
 
   onUserMessage(handler: UserMessageHandler): void {
-    this.userMessageHandlers.push(handler);
+    this.userMessageHandler = handler;
   }
 
   onReviewRequest(handler: () => void): void {
-    this.reviewHandlers.push(handler);
+    this.reviewHandler = handler;
   }
 
   onModeChange(handler: ModeChangeHandler): void {
-    this.modeChangeHandlers.push(handler);
+    this.modeChangeHandler = handler;
   }
 
   setMode(mode: string): void {
@@ -63,7 +61,7 @@ export class AiPanel {
   }
 
   onSelectModel(handler: () => void): void {
-    this.selectModelHandlers.push(handler);
+    this.selectModelHandler = handler;
   }
 
   setModelLabel(label: string): void {
@@ -89,10 +87,12 @@ export class AiPanel {
   }
 
   private getHtml(): string {
+    const csp = this.panel.webview.cspSource;
     return /* html */`<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${csp} 'unsafe-inline'; script-src 'nonce-${this.nonce}';">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Interview AI</title>
 <style>
@@ -392,7 +392,7 @@ export class AiPanel {
     </button>
   </div>
 </div>
-<script>
+<script nonce="${this.nonce}">
   const vscode = acquireVsCodeApi();
   const messagesEl = document.getElementById('messages');
   const inputEl    = document.getElementById('user-input');
@@ -456,6 +456,8 @@ export class AiPanel {
 
   window.addEventListener('message', ev => {
     const msg = ev.data;
+    if (msg.type === 'setMode') { activatePill(msg.mode); return; }
+    if (msg.type === 'setModelLabel') { modelLabel.textContent = msg.label; return; }
     if (msg.type === 'thinking') {
       clearEmpty();
       removeThinking();
@@ -499,7 +501,6 @@ export class AiPanel {
     vscode.postMessage({ type: 'userMessage', text });
   }
 
-  // Mode pills
   const pills = document.querySelectorAll('.mode-pill');
   function activatePill(mode) {
     pills.forEach(p => p.classList.toggle('active', p.dataset.mode === mode));
@@ -510,15 +511,10 @@ export class AiPanel {
       vscode.postMessage({ type: 'modeChange', mode: pill.dataset.mode });
     });
   });
-  // Model button
+
   const modelBtn = document.getElementById('model-btn');
   const modelLabel = document.getElementById('model-label');
   modelBtn.addEventListener('click', () => vscode.postMessage({ type: 'selectModel' }));
-
-  window.addEventListener('message', ev => {
-    if (ev.data.type === 'setMode') activatePill(ev.data.mode);
-    if (ev.data.type === 'setModelLabel') modelLabel.textContent = ev.data.label;
-  }, true);
 
   reviewBtn.addEventListener('click', () => vscode.postMessage({ type: 'requestReview' }));
   sendBtn.addEventListener('click', send);

@@ -110,11 +110,6 @@
           "default": "vscode-lm",
           "description": "AI provider for interview feedback"
         },
-        "mockInterview.apiKey": {
-          "type": "string",
-          "default": "",
-          "description": "API key for Claude or OpenAI (not needed for vscode-lm or ollama)"
-        },
         "mockInterview.ollamaUrl": {
           "type": "string",
           "default": "http://localhost:11434",
