@@ -2,9 +2,9 @@
   "name": "mock-interview-vscode",
   "displayName": "Mock Interview",
   "description": "AI-powered mock coding interviews with Claude, Ollama, or GitHub Copilot. Auto-detects problems, preserves your working session, and gives feedback from a harsh, hint-giving, or Socratic interviewer.",
-  "publisher": "tomato",
+  "publisher": "epicseven-cup",
   "version": "0.0.1",
-  "license": "MIT",
+  "license": "GPL-3.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/epicseven-cup/mock-interview-vscode"
